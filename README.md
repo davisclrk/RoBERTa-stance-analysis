@@ -205,25 +205,6 @@ The decay factor is controlled by `LR_DECAY` in `config.py` (default `0.9`). Set
 
 ---
 
-### Weighted Random Sampler
-
-The PHEME dataset has severe class imbalance: `comment` makes up 68.6% of examples while `deny` is only 7.8%. Even with weighted cross-entropy loss (which penalises wrong predictions on minority classes more heavily), the model still *sees* roughly 9× more `comment` examples per epoch than `deny` examples. This means gradients are dominated by the majority class throughout training.
-
-`WeightedRandomSampler` addresses this by controlling what the model *sees*. Each training example is assigned a sampling weight equal to the inverse frequency of its class, so all four classes are drawn with roughly equal frequency within each epoch:
-
-| Class | Original count | Drawn per epoch | Change |
-|---|---|---|---|
-| comment | 2,923 | ~1,042 | 0.36× (undersampled) |
-| support | 636 | ~1,076 | 1.69× (oversampled) |
-| query | 355 | ~1,033 | 2.91× (oversampled) |
-| deny | 325 | ~1,054 | 3.24× (oversampled) |
-
-The two mechanisms target imbalance from complementary angles: the **sampler** balances *exposure* (how often the model trains on each class), while **weighted loss** balances *gradient magnitude* (how hard it trains when it sees each class). Neither alone is as effective as both together.
-
-Note that because `WeightedRandomSampler` handles ordering, `shuffle=True` is not set on the training `DataLoader` (they are mutually exclusive in PyTorch).
-
----
-
 ### `src/evaluate.py`
 Evaluation utilities used by `train.py` and usable standalone.
 

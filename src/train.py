@@ -1,6 +1,7 @@
 """Fine-tuning loop for stance classification on RumourEval-2017."""
 
 import json
+import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -30,28 +31,20 @@ def set_seed(seed: int) -> None:
 
 
 def compute_class_weights(examples: list[dict]) -> torch.Tensor:
-    """Inverse-frequency weights derived from training examples only."""
+    """Square-root inverse-frequency weights derived from training examples only.
+
+    Full inverse-frequency (total / 4*count) gives deny ~3.24× the weight of
+    comment. Combined with a weighted sampler that was previously used, this
+    produced an ~80:1 effective ratio that caused the model to never predict
+    comment. Square-root weighting gives ~1.80× max ratio — still a meaningful
+    correction for the imbalance without overcorrecting.
+    """
     counts = Counter(ex["label"] for ex in examples)
     total = len(examples)
     return torch.tensor(
-        [total / (NUM_LABELS * max(counts[i], 1)) for i in range(NUM_LABELS)],
+        [math.sqrt(total / (NUM_LABELS * max(counts[i], 1))) for i in range(NUM_LABELS)],  # sqrt weighting
         dtype=torch.float,
     )
-
-
-def make_weighted_sampler(examples: list[dict]) -> WeightedRandomSampler:
-    """Per-example sampling weights so every class is drawn equally often.
-
-    Each example is assigned weight = 1 / (count of its class in the dataset),
-    so a rare class like 'deny' (334 examples) gets picked ~9x more often per
-    draw than 'comment' (2923 examples).  Combined with weighted CE loss this
-    addresses imbalance from two angles: what the model *sees* and how hard it
-    *trains* on each class.
-    """
-    counts = Counter(ex["label"] for ex in examples)
-    weights = [1.0 / counts[ex["label"]] for ex in examples]
-    return WeightedRandomSampler(weights, num_samples=len(examples), replacement=True)
-
 
 def get_layerwise_optimizer(model: StanceClassifier, base_lr: float, weight_decay: float, lr_decay: float) -> AdamW:
     """AdamW with per-layer learning rates that decay toward the input.
@@ -108,9 +101,7 @@ def _make_loaders(
     train_ds = PhemeDataset(train_examples, tokenizer, MAX_SEQ_LEN)
     test_ds = PhemeDataset(test_examples, tokenizer, MAX_SEQ_LEN)
 
-    sampler = make_weighted_sampler(train_examples)
-    # sampler handles ordering, so shuffle must be False
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=sampler, collate_fn=collate)
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate)
     test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE * 2, shuffle=False, collate_fn=collate)
     return train_loader, test_loader
 

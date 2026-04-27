@@ -10,12 +10,9 @@ EXTRACTED="$DEST/pheme-rumour-scheme-dataset"
 mkdir -p "$DEST"
 
 if [ -d "$EXTRACTED" ]; then
-  echo "Dataset already extracted at $EXTRACTED — skipping download."
+  echo "Dataset already extracted at $EXTRACTED — skipping."
   exit 0
 fi
-
-echo "Downloading PHEME rumour scheme dataset..."
-curl -L "https://figshare.com/ndownloader/files/4988998" -o "$TARBALL"
 
 echo "Extracting..."
 tar -xjf "$TARBALL" -C "$DEST"
