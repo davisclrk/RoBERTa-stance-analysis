@@ -18,5 +18,6 @@ WEIGHT_DECAY = 0.01
 NUM_EPOCHS = 4
 WARMUP_RATIO = 0.1
 GRAD_CLIP = 1.0
+LR_DECAY = 0.9       # per-layer LR decay factor (1.0 = no decay)
 FP16 = True
 SEED = 42
