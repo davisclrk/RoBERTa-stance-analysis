@@ -152,7 +152,7 @@ def train_fold(
     scheduler = get_linear_schedule_with_warmup(optimizer, warmup_steps, total_steps)
 
     use_amp = FP16 and device.type == "cuda"
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    scaler = torch.amp.GradScaler(device.type, enabled=use_amp)
 
     best_macro_f1 = -1.0
     best_metrics: dict = {}
