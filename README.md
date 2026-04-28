@@ -34,7 +34,7 @@ RoBERTa-stance-analysis/
 ├── notebooks/
 │   └── colab_train.ipynb                        # end-to-end training on Google Colab
 ├── scripts/
-│   └── download_data.sh
+│   └── extract_data.sh
 ├── src/
 │   ├── config.py
 │   ├── data.py

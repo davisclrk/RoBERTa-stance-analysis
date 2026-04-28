@@ -59,11 +59,19 @@ def _build_parent_maps(base_dir: Path) -> dict[str, dict]:
 
 
 def _get_ancestors(tweet_id: str, parent_map: dict) -> list[str]:
-    """Return ordered ancestor IDs from root down to immediate parent."""
+    """Return ordered ancestor IDs from root down to immediate parent.
+
+    Cycle-guarded: a malformed structure.json with a parent cycle would
+    otherwise loop forever. We bail as soon as we revisit a node.
+    """
     path = []
+    seen = {tweet_id}
     current = tweet_id
     while current in parent_map:
         current = parent_map[current]
+        if current in seen:
+            break
+        seen.add(current)
         path.append(current)
     path.reverse()  # root first
     return path
@@ -108,6 +116,7 @@ def load_pheme_dataset(events: Optional[list[str]] = None) -> list[dict]:
 
     examples = []
     skipped = 0
+    missing_ancestors = 0
 
     for entry in reply_entries:
         tweet_id = entry["tweetid"]
@@ -137,7 +146,10 @@ def load_pheme_dataset(events: Optional[list[str]] = None) -> list[dict]:
                 branch_texts.append(_read_tweet_text(source_map[anc_id]))
             elif anc_id in reaction_map:
                 branch_texts.append(_read_tweet_text(reaction_map[anc_id]))
-            # skip silently if the file is missing (rare intermediate tweets)
+            else:
+                # Rare: an intermediate tweet referenced by structure.json
+                # has no JSON file. We continue with a shorter branch.
+                missing_ancestors += 1
 
         examples.append({
             "tweet_id": tweet_id,
@@ -150,6 +162,8 @@ def load_pheme_dataset(events: Optional[list[str]] = None) -> list[dict]:
 
     if skipped:
         print(f"[data] skipped {skipped} entries (unknown label or missing file)")
+    if missing_ancestors:
+        print(f"[data] {missing_ancestors} ancestor tweet(s) had no JSON file — branch context truncated for those replies")
 
     return examples
 

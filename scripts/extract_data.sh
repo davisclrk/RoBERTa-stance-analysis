@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Download and extract the PHEME rumour scheme dataset into data/raw/.
-# Usage: bash scripts/download_data.sh  (run from repo root)
+# Extract the PHEME rumour scheme dataset tarball into data/raw/.
+# Usage: bash scripts/extract_data.sh  (run from repo root)
 set -euo pipefail
 
 DEST="data/raw"

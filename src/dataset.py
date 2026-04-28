@@ -41,12 +41,7 @@ def _build_input_ids(
         mask = [0] + [1] * len(target_ids) + [0]
         return ids[:max_len], mask[:max_len]
 
-    # Budget available for all ancestor content (not counting their sep pairs yet)
-    # 2 for CLS + EOS, 2 for sep pair after last ancestor (before target), len(target)
-    ancestor_sep_and_base = 2 + len(target_ids)  # CLS + EOS + target content
-    # Each ancestor segment also costs 2 sep tokens; accounted below.
-
-    # Encode every ancestor.
+    # Encode every ancestor; total length is computed by `_total_len()` below.
     all_anc_ids = [tokenizer.encode(t, add_special_tokens=False) for t in branch_texts]
 
     def _total_len(anc_id_lists: list[list[int]]) -> int:
