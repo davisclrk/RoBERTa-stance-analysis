@@ -86,24 +86,22 @@ def _build_input_ids(branch_texts: list[str], target_text: str, tokenizer, max_l
 
 class PhemeDataset(Dataset):
     def __init__(self, examples: list[dict], tokenizer, max_len: int = 256):
-        self.examples = examples
-        self.tokenizer = tokenizer
-        self.max_len = max_len
+        # Tokenize once at construction so each epoch is a tensor lookup, not a
+        # re-tokenization. Also makes num_workers > 0 safe (no shared tokenizer).
+        self._items: list[dict] = []
+        for ex in examples:
+            input_ids = _build_input_ids(ex["branch_texts"], ex["text"], tokenizer, max_len)
+            self._items.append({
+                "input_ids": torch.tensor(input_ids, dtype=torch.long),
+                "attention_mask": torch.ones(len(input_ids), dtype=torch.long),
+                "label": torch.tensor(ex["label"], dtype=torch.long),
+            })
 
     def __len__(self) -> int:
-        return len(self.examples)
+        return len(self._items)
 
     def __getitem__(self, idx: int) -> dict:
-        ex = self.examples[idx]
-        input_ids = _build_input_ids(
-            ex["branch_texts"], ex["text"], self.tokenizer, self.max_len
-        )
-        attention_mask = [1] * len(input_ids)
-        return {
-            "input_ids": torch.tensor(input_ids, dtype=torch.long),
-            "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
-            "label": torch.tensor(ex["label"], dtype=torch.long),
-        }
+        return self._items[idx]
 
 
 def collate_fn(batch: list[dict], pad_token_id: int) -> dict:
