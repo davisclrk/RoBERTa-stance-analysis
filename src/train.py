@@ -5,7 +5,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, WeightedRandomSampler
+from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 from functools import partial
@@ -14,9 +14,9 @@ from pathlib import Path
 from tqdm import tqdm
 
 from config import (
-    BATCH_SIZE, FP16, GRAD_ACCUM_STEPS, GRAD_CLIP, LABELS,
+    BATCH_SIZE, EARLY_STOP_PATIENCE, FP16, GRAD_ACCUM_STEPS, GRAD_CLIP, LABELS,
     LEARNING_RATE, LR_DECAY, MAX_SEQ_LEN, MODEL_NAME, NUM_EPOCHS, NUM_LABELS,
-    OUTPUTS, SEED, WARMUP_RATIO, WEIGHT_DECAY,
+    NUM_SEEDS, OUTPUTS, SEED, WARMUP_RATIO, WEIGHT_DECAY,
 )
 from data import load_pheme_dataset, loeo_splits
 from dataset import PhemeDataset, collate_fn
@@ -139,11 +139,15 @@ def train_fold(
     tokenizer,
     device: torch.device,
     fold_dir: Path,
+    seed: int,
 ) -> dict:
-    """Train on train_examples and evaluate on test_examples.
+    """Train one (event, seed) combination and return the best-epoch metrics.
 
-    Saves the best checkpoint (by macro-F1) and returns its metrics.
+    Stops early once test macro-F1 has not improved for `EARLY_STOP_PATIENCE`
+    consecutive epochs. The best-epoch checkpoint, metrics, and confusion matrix
+    are written to fold_dir.
     """
+    set_seed(seed)
     train_loader, test_loader = _make_loaders(train_examples, test_examples, tokenizer, device)
 
     model = StanceClassifier(MODEL_NAME, NUM_LABELS).to(device)
@@ -161,6 +165,8 @@ def train_fold(
     best_metrics: dict = {}
     best_labels: list = []
     best_preds: list = []
+    best_epoch = 0
+    epochs_since_best = 0
 
     for epoch in range(1, NUM_EPOCHS + 1):
         model.train()
@@ -169,7 +175,7 @@ def train_fold(
 
         pbar = tqdm(
             train_loader,
-            desc=f"[{held_out_event}] epoch {epoch}/{NUM_EPOCHS}",
+            desc=f"[{held_out_event} seed={seed}] epoch {epoch}/{NUM_EPOCHS}",
             leave=False,
         )
         for step, batch in enumerate(pbar):
@@ -205,7 +211,7 @@ def train_fold(
         avg_loss = running_loss / len(train_loader)
 
         print(
-            f"  [{held_out_event}] epoch {epoch}  "
+            f"  [{held_out_event} seed={seed}] epoch {epoch}  "
             f"loss={avg_loss:.3f}  macro_f1={macro_f1:.4f}  acc={metrics['accuracy']:.4f}"
         )
 
@@ -214,11 +220,22 @@ def train_fold(
             best_metrics = metrics
             best_labels = true_labels
             best_preds = pred_labels
+            best_epoch = epoch
+            epochs_since_best = 0
             fold_dir.mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), fold_dir / "best_model.pt")
+        else:
+            epochs_since_best += 1
+            if epochs_since_best >= EARLY_STOP_PATIENCE:
+                print(
+                    f"  [{held_out_event} seed={seed}] early stop at epoch {epoch} "
+                    f"(best epoch {best_epoch}, macro_f1={best_macro_f1:.4f})"
+                )
+                break
 
-    # Persist per-fold artefacts for the best epoch.
+    # Persist per-(fold, seed) artefacts for the best epoch.
     fold_dir.mkdir(parents=True, exist_ok=True)
+    best_metrics["best_epoch"] = best_epoch
     with open(fold_dir / "results.json", "w") as f:
         json.dump(best_metrics, f, indent=2)
     print_report(best_labels, best_preds)
@@ -227,16 +244,37 @@ def train_fold(
     return best_metrics
 
 
+def _aggregate_seeds(per_seed: list[dict]) -> dict:
+    """Mean and std across seeds for macro-F1, accuracy, and per-class F1."""
+    macro = np.array([m["macro_f1"] for m in per_seed])
+    acc = np.array([m["accuracy"] for m in per_seed])
+    pcf1 = np.array([m["per_class_f1"] for m in per_seed])
+    return {
+        "macro_f1_mean": float(macro.mean()),
+        "macro_f1_std": float(macro.std()),
+        "accuracy_mean": float(acc.mean()),
+        "accuracy_std": float(acc.std()),
+        "per_class_f1_mean": pcf1.mean(axis=0).tolist(),
+        "per_class_f1_std": pcf1.std(axis=0).tolist(),
+        "per_seed": per_seed,
+    }
+
+
 def run_loeo(output_dir: Path = OUTPUTS) -> dict:
-    """Run full Leave-One-Event-Out evaluation and return per-fold results."""
-    set_seed(SEED)
+    """Run Leave-One-Event-Out evaluation across NUM_SEEDS seeds per fold.
+
+    Each fold runs once per seed; metrics across seeds are aggregated to
+    mean ± std. This reduces the run-to-run variance that LOEO on small
+    folds is otherwise prone to.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
+    print(f"Device: {device}  |  seeds per fold: {NUM_SEEDS}")
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, add_prefix_space=True)
     examples = load_pheme_dataset()
     splits = loeo_splits(examples)
 
+    seeds = [SEED + i for i in range(NUM_SEEDS)]
     all_results: dict = {}
 
     for held_out_event, train_examples, test_examples in splits:
@@ -247,30 +285,50 @@ def run_loeo(output_dir: Path = OUTPUTS) -> dict:
             f"{'='*60}"
         )
         fold_dir = output_dir / f"fold_{held_out_event}"
-        metrics = train_fold(
-            held_out_event, train_examples, test_examples,
-            tokenizer, device, fold_dir,
+        per_seed = []
+        for seed in seeds:
+            seed_dir = fold_dir / f"seed_{seed}"
+            metrics = train_fold(
+                held_out_event, train_examples, test_examples,
+                tokenizer, device, seed_dir, seed=seed,
+            )
+            per_seed.append(metrics)
+
+        agg = _aggregate_seeds(per_seed)
+        all_results[held_out_event] = agg
+        fold_dir.mkdir(parents=True, exist_ok=True)
+        with open(fold_dir / "results.json", "w") as f:
+            json.dump(agg, f, indent=2)
+
+        print(
+            f"  [{held_out_event}] across {NUM_SEEDS} seeds: "
+            f"macro_f1={agg['macro_f1_mean']:.4f}±{agg['macro_f1_std']:.4f}  "
+            f"acc={agg['accuracy_mean']:.4f}±{agg['accuracy_std']:.4f}"
         )
-        all_results[held_out_event] = metrics
 
-    # Summary table.
-    macro_f1s = [v["macro_f1"] for v in all_results.values()]
-    accs = [v["accuracy"] for v in all_results.values()]
-    per_class = np.array([v["per_class_f1"] for v in all_results.values()])
-
+    # Summary table (means across seeds, with std for headline metrics).
     print(f"\n{'='*60}")
-    print("LOEO Summary")
+    print(f"LOEO Summary (mean over {NUM_SEEDS} seeds; ± shows std across seeds)")
     print(f"{'='*60}")
-    header = f"{'Event':<26}" + "  ".join(f"{l:>8}" for l in LABELS) + "  macro_f1    acc"
+    header = f"{'Event':<26}" + "  ".join(f"{l:>8}" for l in LABELS) + "       macro_f1            acc"
     print(header)
     print("-" * len(header))
-    for event, m in all_results.items():
-        row = f"{event:<26}" + "  ".join(f"{f:>8.4f}" for f in m["per_class_f1"])
-        row += f"  {m['macro_f1']:>8.4f}  {m['accuracy']:>6.4f}"
+    for event, agg in all_results.items():
+        row = f"{event:<26}" + "  ".join(f"{f:>8.4f}" for f in agg["per_class_f1_mean"])
+        row += f"  {agg['macro_f1_mean']:>6.4f}±{agg['macro_f1_std']:.4f}"
+        row += f"  {agg['accuracy_mean']:>6.4f}±{agg['accuracy_std']:.4f}"
         print(row)
     print("-" * len(header))
-    mean_row = f"{'MEAN':<26}" + "  ".join(f"{f:>8.4f}" for f in per_class.mean(axis=0).tolist())
-    mean_row += f"  {sum(macro_f1s)/len(macro_f1s):>8.4f}  {sum(accs)/len(accs):>6.4f}"
+
+    pcf1_means = np.array([v["per_class_f1_mean"] for v in all_results.values()])
+    macro_means = np.array([v["macro_f1_mean"] for v in all_results.values()])
+    macro_stds = np.array([v["macro_f1_std"] for v in all_results.values()])
+    acc_means = np.array([v["accuracy_mean"] for v in all_results.values()])
+    acc_stds = np.array([v["accuracy_std"] for v in all_results.values()])
+
+    mean_row = f"{'MEAN':<26}" + "  ".join(f"{f:>8.4f}" for f in pcf1_means.mean(axis=0).tolist())
+    mean_row += f"  {macro_means.mean():>6.4f}±{macro_stds.mean():.4f}"
+    mean_row += f"  {acc_means.mean():>6.4f}±{acc_stds.mean():.4f}"
     print(mean_row)
 
     output_dir.mkdir(parents=True, exist_ok=True)

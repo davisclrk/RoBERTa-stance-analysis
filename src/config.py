@@ -15,9 +15,11 @@ BATCH_SIZE = 16
 GRAD_ACCUM_STEPS = 1
 LEARNING_RATE = 1e-5
 WEIGHT_DECAY = 0.01
-NUM_EPOCHS = 6
+NUM_EPOCHS = 10
 WARMUP_RATIO = 0.1
 GRAD_CLIP = 1.0
-LR_DECAY = 0.9       # per-layer LR decay factor (1.0 = no decay)
+LR_DECAY = 0.9                # per-layer LR decay factor (1.0 = no decay)
+EARLY_STOP_PATIENCE = 2       
+NUM_SEEDS = 3                 
 FP16 = True
 SEED = 42
