@@ -23,6 +23,13 @@ class StanceClassifier(nn.Module):
         self.dense = nn.Linear(hidden_size, hidden_size)
         self.out_proj = nn.Linear(hidden_size, num_labels)
 
+        # Match RobertaPreTrainedModel._init_weights: N(0, initializer_range^2),
+        # biases zero. Default initializer_range is 0.02 for RoBERTa-base.
+        std = self.encoder.config.initializer_range
+        for layer in (self.dense, self.out_proj):
+            nn.init.normal_(layer.weight, mean=0.0, std=std)
+            nn.init.zeros_(layer.bias)
+
     def forward(
         self,
         input_ids: torch.Tensor,
