@@ -14,9 +14,9 @@ from pathlib import Path
 from tqdm import tqdm
 
 from config import (
-    BATCH_SIZE, EARLY_STOP_PATIENCE, FP16, GRAD_ACCUM_STEPS, GRAD_CLIP, LABELS,
-    LEARNING_RATE, LR_DECAY, MAX_SEQ_LEN, MODEL_NAME, NUM_EPOCHS, NUM_LABELS,
-    NUM_SEEDS, OUTPUTS, SEED, WARMUP_RATIO, WEIGHT_DECAY,
+    BATCH_SIZE, EARLY_STOP_PATIENCE, FOCAL_GAMMA, FP16, GRAD_ACCUM_STEPS, GRAD_CLIP,
+    LABELS, LEARNING_RATE, LR_DECAY, MAX_SEQ_LEN, MODEL_NAME, NUM_EPOCHS, NUM_LABELS,
+    NUM_SEEDS, OUTPUTS, POOLING, SEED, USE_FOCAL_LOSS, WARMUP_RATIO, WEIGHT_DECAY,
 )
 from data import load_pheme_dataset, loeo_splits
 from dataset import PhemeDataset, collate_fn
@@ -28,6 +28,28 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
+
+
+def focal_loss(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    weight: torch.Tensor | None = None,
+    gamma: float = 2.0,
+) -> torch.Tensor:
+    """Class-weighted focal loss: alpha_c * (1 - p_t)^gamma * -log(p_t).
+
+    Reduces to weighted CE when gamma=0. The `(1-p_t)^gamma` factor down-weights
+    easy examples (high p_t) so the optimizer spends more capacity on hard ones,
+    which on imbalanced stance datasets is often complementary to class
+    weighting (which targets rare *classes*, not hard *examples*).
+    """
+    log_p = torch.log_softmax(logits, dim=-1)                    # (B, C)
+    log_p_t = log_p.gather(1, labels.unsqueeze(1)).squeeze(1)    # (B,)
+    p_t = log_p_t.exp()
+    loss = -((1.0 - p_t) ** gamma) * log_p_t                     # (B,)
+    if weight is not None:
+        loss = loss * weight.gather(0, labels)
+    return loss.mean()
 
 
 def compute_class_weights(examples: list[dict]) -> torch.Tensor:
@@ -126,6 +148,7 @@ def _eval_pass(
             out = model(
                 input_ids=batch["input_ids"].to(device),
                 attention_mask=batch["attention_mask"].to(device),
+                target_mask=batch["target_mask"].to(device),
             )
             all_preds.extend(out["logits"].argmax(dim=-1).cpu().tolist())
             all_labels.extend(batch["labels"].tolist())
@@ -150,7 +173,7 @@ def train_fold(
     set_seed(seed)
     train_loader, test_loader = _make_loaders(train_examples, test_examples, tokenizer, device)
 
-    model = StanceClassifier(MODEL_NAME, NUM_LABELS).to(device)
+    model = StanceClassifier(MODEL_NAME, NUM_LABELS, pooling=POOLING).to(device)
     class_weights = compute_class_weights(train_examples).to(device)
 
     optimizer = get_layerwise_optimizer(model, LEARNING_RATE, WEIGHT_DECAY, LR_DECAY)
@@ -181,13 +204,21 @@ def train_fold(
         for step, batch in enumerate(pbar):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
+            target_mask = batch["target_mask"].to(device)
             labels = batch["labels"].to(device)
 
             with torch.amp.autocast("cuda", enabled=use_amp):
-                out = model(input_ids=input_ids, attention_mask=attention_mask)
-                loss = nn.functional.cross_entropy(
-                    out["logits"], labels, weight=class_weights
+                out = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    target_mask=target_mask,
                 )
+                if USE_FOCAL_LOSS:
+                    loss = focal_loss(out["logits"], labels, weight=class_weights, gamma=FOCAL_GAMMA)
+                else:
+                    loss = nn.functional.cross_entropy(
+                        out["logits"], labels, weight=class_weights
+                    )
                 loss = loss / GRAD_ACCUM_STEPS
 
             scaler.scale(loss).backward()

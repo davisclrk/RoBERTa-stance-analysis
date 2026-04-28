@@ -193,6 +193,13 @@ outputs/
 - **Multi-seed averaging:** each LOEO fold runs `NUM_SEEDS` times (default 3, seeds `SEED, SEED+1, ...`) and reports mean ± std. LOEO held-out folds are small (the deny class can be <50 examples in some events), so a few flipped predictions cause large run-to-run swings; averaging across seeds is what makes ablation comparisons interpretable.
 - **Early stopping:** trains up to `NUM_EPOCHS=10` and stops a seed when test macro-F1 has not improved for `EARLY_STOP_PATIENCE=2` consecutive epochs. Note: best-checkpoint selection has always used test macro-F1 in this codebase, so early stopping does not introduce additional protocol leakage — it just terminates a run that has plateaued under the same selection criterion. Set `EARLY_STOP_PATIENCE = NUM_EPOCHS` to disable.
 
+#### A/B variants (off by default)
+
+Two opt-in switches in `config.py` for controlled ablations against the baseline above. Toggle one at a time and re-run `run_loeo` to compare.
+
+- **`USE_FOCAL_LOSS = True` (with `FOCAL_GAMMA = 2.0`):** swaps weighted CE for `α_c · (1 - p_t)^γ · -log(p_t)`. Class weights still come from `compute_class_weights`. Class weighting targets rare *classes* uniformly; focal modulation targets hard *examples* (low predicted probability of the correct class) regardless of class. The two are complementary on imbalanced stance datasets — minority-class examples that the model has already learned get less gradient pressure, and confidently-wrong majority-class examples get more. `FOCAL_GAMMA = 0` reduces to plain weighted CE and is a useful sanity-check setting.
+- **`POOLING = "target_mean"`:** instead of using the `<s>` token, mean-pools the encoder's last hidden states over only the target tweet's token positions (a `target_mask` is built alongside `input_ids` in `dataset.py` and threaded through). Because the input is mostly context (root + ancestor chain), the `<s>` representation can drift away from the target tweet specifically; mean-pooling forces the classifier to attend to where the label actually applies. `POOLING = "cls"` is the standard baseline.
+
 To run:
 
 ```bash
