@@ -148,11 +148,16 @@ Defines the `StanceClassifier` nn.Module — a thin wrapper around `cardiffnlp/t
 
 ```
 twitter-roberta-base encoder  (~124.6M params)
-  → last_hidden_state[:, 0, :]   (CLS token, shape B × 768)
+  → last_hidden_state[:, 0, :]   (<s> token, shape B × 768)
+  → Dropout(p=0.1)
+  → Linear(768 → 768)
+  → tanh
   → Dropout(p=0.1)
   → Linear(768 → 4)
   → logits  (shape B × 4)
 ```
+
+This is the standard `RobertaForSequenceClassification` head — the extra hidden layer + non-linearity gives the encoder room to specialise its `<s>` representation for the SDQC label space, which consistently helps on small fine-tuning datasets like RumourEval over a bare linear projection.
 
 `forward(input_ids, attention_mask, labels=None)` returns a dict with key `logits` (always) and `loss` (only when `labels` is passed). When used in training, loss is **not** passed through `forward` — it is computed externally in `train.py` using weighted cross-entropy.
 
