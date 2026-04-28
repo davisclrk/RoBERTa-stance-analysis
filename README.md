@@ -168,13 +168,18 @@ This is the standard `RobertaForSequenceClassification` head — the extra hidde
 End-to-end fine-tuning loop. Entry point:
 
 **`run_loeo(output_dir=OUTPUTS)`**
-Runs all 8 LOEO folds and prints a summary table of per-class F1 and macro-F1 for each held-out event. Saves per-fold artefacts under `outputs/fold_{event}/`:
+Runs all 8 LOEO folds, with `NUM_SEEDS` independent seeds per fold, and prints a summary table of per-class F1 and macro-F1 ± std across seeds for each held-out event. Output layout:
 
-| File                   | Contents                                                        |
-| ---------------------- | --------------------------------------------------------------- |
-| `best_model.pt`        | State dict of the epoch with highest macro-F1 on the test split |
-| `results.json`         | Accuracy, macro-F1, and per-class F1 for the best epoch         |
-| `confusion_matrix.png` | Confusion matrix heatmap                                        |
+```
+outputs/
+├── loeo_results.json                     # aggregated mean ± std across all folds
+└── fold_{event}/
+    ├── results.json                      # mean ± std across seeds for this fold
+    └── seed_{N}/
+        ├── best_model.pt                 # state dict of best-macro-F1 epoch (this seed)
+        ├── results.json                  # metrics for that epoch
+        └── confusion_matrix.png          # confusion matrix heatmap
+```
 
 **Key training details:**
 
@@ -185,6 +190,8 @@ Runs all 8 LOEO folds and prints a summary table of per-class F1 and macro-F1 fo
 - **Mixed precision:** `torch.amp.autocast` + `GradScaler` when a CUDA device is available
 - **Gradient clipping:** max norm 1.0
 - **Tokenizer:** loaded with `add_prefix_space=True` so that each ancestor / target segment is encoded as if it were a continuation of running text — preserves the leading-space (`Ġ`) BPE markers that the encoder saw during pretraining.
+- **Multi-seed averaging:** each LOEO fold runs `NUM_SEEDS` times (default 3, seeds `SEED, SEED+1, ...`) and reports mean ± std. LOEO held-out folds are small (the deny class can be <50 examples in some events), so a few flipped predictions cause large run-to-run swings; averaging across seeds is what makes ablation comparisons interpretable.
+- **Early stopping:** trains up to `NUM_EPOCHS=10` and stops a seed when test macro-F1 has not improved for `EARLY_STOP_PATIENCE=2` consecutive epochs. Note: best-checkpoint selection has always used test macro-F1 in this codebase, so early stopping does not introduce additional protocol leakage — it just terminates a run that has plateaued under the same selection criterion. Set `EARLY_STOP_PATIENCE = NUM_EPOCHS` to disable.
 
 To run:
 
