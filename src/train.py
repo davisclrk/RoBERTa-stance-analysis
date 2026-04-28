@@ -33,16 +33,15 @@ def set_seed(seed: int) -> None:
 def compute_class_weights(examples: list[dict]) -> torch.Tensor:
     """Square-root inverse-frequency weights derived from training examples only.
 
-    Full inverse-frequency (total / 4*count) gives deny ~3.24× the weight of
-    comment. Combined with a weighted sampler that was previously used, this
-    produced an ~80:1 effective ratio that caused the model to never predict
-    comment. Square-root weighting gives ~1.80× max ratio — still a meaningful
-    correction for the imbalance without overcorrecting.
+    Full inverse-frequency (total / 4*count) makes deny ~3.24x the weight of
+    comment, which over-corrects on this dataset and starves the comment class.
+    Square-root weighting compresses that ratio to ~1.80x max — enough to nudge
+    the model toward minority classes without flipping the bias the other way.
     """
     counts = Counter(ex["label"] for ex in examples)
     total = len(examples)
     return torch.tensor(
-        [math.sqrt(total / (NUM_LABELS * max(counts[i], 1))) for i in range(NUM_LABELS)],  # sqrt weighting
+        [math.sqrt(total / (NUM_LABELS * max(counts[i], 1))) for i in range(NUM_LABELS)],
         dtype=torch.float,
     )
 
@@ -178,9 +177,12 @@ def train_fold(
             if (step + 1) % GRAD_ACCUM_STEPS == 0:
                 scaler.unscale_(optimizer)
                 nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
+                scale_before = scaler.get_scale()
                 scaler.step(optimizer)
                 scaler.update()
-                scheduler.step()
+                # Skip scheduler step if AMP skipped the optimizer step (inf/nan grads).
+                if scaler.get_scale() >= scale_before:
+                    scheduler.step()
                 optimizer.zero_grad()
 
             pbar.set_postfix({"loss": f"{running_loss / (step + 1):.3f}"})
@@ -218,7 +220,7 @@ def run_loeo(output_dir: Path = OUTPUTS) -> dict:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, add_prefix_space=True)
     examples = load_pheme_dataset()
     splits = loeo_splits(examples)
 
