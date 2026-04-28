@@ -94,21 +94,34 @@ def _make_loaders(
     train_examples: list[dict],
     test_examples: list[dict],
     tokenizer,
+    device: torch.device,
 ) -> tuple[DataLoader, DataLoader]:
     pad_id = tokenizer.pad_token_id
     collate = partial(collate_fn, pad_token_id=pad_id)
     train_ds = PhemeDataset(train_examples, tokenizer, MAX_SEQ_LEN)
     test_ds = PhemeDataset(test_examples, tokenizer, MAX_SEQ_LEN)
 
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate)
-    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE * 2, shuffle=False, collate_fn=collate)
+    pin_memory = device.type == "cuda"
+    train_loader = DataLoader(
+        train_ds, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate,
+        num_workers=2, pin_memory=pin_memory, persistent_workers=True,
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=BATCH_SIZE * 2, shuffle=False, collate_fn=collate,
+        num_workers=2, pin_memory=pin_memory, persistent_workers=True,
+    )
     return train_loader, test_loader
 
 
-def _eval_pass(model: StanceClassifier, loader: DataLoader, device: torch.device) -> tuple[dict, list, list]:
+def _eval_pass(
+    model: StanceClassifier,
+    loader: DataLoader,
+    device: torch.device,
+    use_amp: bool = False,
+) -> tuple[dict, list, list]:
     model.eval()
     all_preds, all_labels = [], []
-    with torch.no_grad():
+    with torch.no_grad(), torch.amp.autocast("cuda", enabled=use_amp):
         for batch in loader:
             out = model(
                 input_ids=batch["input_ids"].to(device),
@@ -131,7 +144,7 @@ def train_fold(
 
     Saves the best checkpoint (by macro-F1) and returns its metrics.
     """
-    train_loader, test_loader = _make_loaders(train_examples, test_examples, tokenizer)
+    train_loader, test_loader = _make_loaders(train_examples, test_examples, tokenizer, device)
 
     model = StanceClassifier(MODEL_NAME, NUM_LABELS).to(device)
     class_weights = compute_class_weights(train_examples).to(device)
@@ -187,7 +200,7 @@ def train_fold(
 
             pbar.set_postfix({"loss": f"{running_loss / (step + 1):.3f}"})
 
-        metrics, true_labels, pred_labels = _eval_pass(model, test_loader, device)
+        metrics, true_labels, pred_labels = _eval_pass(model, test_loader, device, use_amp=use_amp)
         macro_f1 = metrics["macro_f1"]
         avg_loss = running_loss / len(train_loader)
 
